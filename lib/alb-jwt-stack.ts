@@ -1,9 +1,12 @@
 import * as cdk from 'aws-cdk-lib';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
+import * as elbv2targets from 'aws-cdk-lib/aws-elasticloadbalancingv2-targets';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import { Construct } from 'constructs';
+import { JwtListenerRule } from './jwt-auth-construct';
 
 export class AlbJwtStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -91,6 +94,55 @@ export class AlbJwtStack extends cdk.Stack {
       validation: acm.CertificateValidation.fromDns(),
     });
 
+    // テナント別バックエンドLambda関数
+    const tenantALambda = new lambda.Function(this, 'TenantALambda', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(`
+        exports.handler = async (event) => {
+          const headers = event.headers || {};
+          const jwtPayload = headers['x-amzn-oidc-data'] ? 
+            JSON.parse(Buffer.from(headers['x-amzn-oidc-data'], 'base64').toString()) : {};
+          
+          return {
+            statusCode: 200,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: 'Tenant A API Response',
+              tenantId: 'tenant-a',
+              timestamp: new Date().toISOString(),
+              user: jwtPayload.sub || 'unknown',
+              scopes: jwtPayload.scope ? jwtPayload.scope.split(' ') : []
+            })
+          };
+        };
+      `),
+    });
+
+    const tenantBLambda = new lambda.Function(this, 'TenantBLambda', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      handler: 'index.handler',
+      code: lambda.Code.fromInline(`
+        exports.handler = async (event) => {
+          const headers = event.headers || {};
+          const jwtPayload = headers['x-amzn-oidc-data'] ? 
+            JSON.parse(Buffer.from(headers['x-amzn-oidc-data'], 'base64').toString()) : {};
+          
+          return {
+            statusCode: 200,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: 'Tenant B API Response',
+              tenantId: 'tenant-b',
+              timestamp: new Date().toISOString(),
+              user: jwtPayload.sub || 'unknown',
+              scopes: jwtPayload.scope ? jwtPayload.scope.split(' ') : []
+            })
+          };
+        };
+      `),
+    });
+
     // Application Load Balancer
     const alb = new elbv2.ApplicationLoadBalancer(this, 'AlbJwtLoadBalancer', {
       vpc,
@@ -103,28 +155,62 @@ export class AlbJwtStack extends cdk.Stack {
       port: 443,
       protocol: elbv2.ApplicationProtocol.HTTPS,
       certificates: [certificate],
-      defaultAction: elbv2.ListenerAction.fixedResponse(200, {
+      defaultAction: elbv2.ListenerAction.fixedResponse(404, {
         contentType: 'application/json',
         messageBody: JSON.stringify({
-          message: 'JWT verification succeeded',
-          timestamp: new Date().toISOString(),
+          error: 'Not Found',
+          message: 'Invalid tenant path',
         }),
       }),
     });
 
-    // JWT検証設定をL7ルールで実装
-    httpsListener.addAction('JwtAuth', {
+    // JWT検証設定
+    const jwksUri = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}/.well-known/jwks.json`;
+    const issuer = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`;
+
+    // CfnListenerでJWT検証を設定
+    const cfnListener = httpsListener.node.defaultChild as elbv2.CfnListener;
+    
+    // テナントA用ルール（/tenant-a/*）
+    const tenantATargetGroup = new elbv2.ApplicationTargetGroup(this, 'TenantATargetGroup', {
+      vpc,
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.LAMBDA,
+      targets: [new elbv2targets.LambdaTarget(tenantALambda)],
+    });
+
+    new JwtListenerRule(this, 'TenantAJwtRule', {
+      listener: httpsListener,
       priority: 100,
-      conditions: [
-        elbv2.ListenerCondition.pathPatterns(['/*']),
-      ],
-      action: elbv2.ListenerAction.fixedResponse(200, {
-        contentType: 'application/json',
-        messageBody: JSON.stringify({
-          message: 'JWT verification succeeded',
-          timestamp: new Date().toISOString(),
-        }),
-      }),
+      pathPatterns: ['/tenant-a/*'],
+      jwtConfig: {
+        issuer: issuer,
+        jwksUri: jwksUri,
+        clientId: tenantAClient.userPoolClientId,
+      },
+      targetGroup: tenantATargetGroup,
+    });
+
+    // テナントB用ルール（/tenant-b/*）
+    const tenantBTargetGroup = new elbv2.ApplicationTargetGroup(this, 'TenantBTargetGroup', {
+      vpc,
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.LAMBDA,
+      targets: [new elbv2targets.LambdaTarget(tenantBLambda)],
+    });
+
+    new JwtListenerRule(this, 'TenantBJwtRule', {
+      listener: httpsListener,
+      priority: 200,
+      pathPatterns: ['/tenant-b/*'],
+      jwtConfig: {
+        issuer: issuer,
+        jwksUri: jwksUri,
+        clientId: tenantBClient.userPoolClientId,
+      },
+      targetGroup: tenantBTargetGroup,
     });
 
     // Outputs
