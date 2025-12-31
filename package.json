@@ -1,0 +1,33 @@
+{
+  "name": "alb-jwt",
+  "version": "1.0.0",
+  "description": "Application Load Balancer JWT認証プロジェクト",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk",
+    "deploy": "cdk deploy",
+    "destroy": "cdk destroy"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/takashi-uchida/alb-jwt.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/takashi-uchida/alb-jwt/issues"
+  },
+  "homepage": "https://github.com/takashi-uchida/alb-jwt#readme",
+  "dependencies": {
+    "@types/node": "^25.0.3",
+    "aws-cdk-lib": "^2.233.0",
+    "constructs": "^10.4.4",
+    "source-map-support": "^0.5.21",
+    "typescript": "^5.9.3"
+  }
+}
